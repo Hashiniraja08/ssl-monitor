@@ -1,0 +1,25 @@
+{
+  "name": "securescan-ai",
+  "version": "1.0.0",
+  "description": "SecureScan AI - SSL/TLS Certificate Scanner & Monitoring Full-Stack Application",
+  "private": true,
+  "scripts": {
+    "dev:server": "node server/index.js",
+    "dev:client": "npm --prefix client run dev",
+    "dev": "node -e \"const { spawn } = require('child_process'); spawn('node', ['server/index.js'], { stdio: 'inherit', shell: true }); spawn('npm', ['--prefix', 'client', 'run', 'dev'], { stdio: 'inherit', shell: true });\"",
+    "start": "node server/index.js",
+    "test": "node --test server/tests/*.test.js",
+    "seed": "node server/db/seed.js",
+    "build": "npm --prefix client run build"
+  },
+  "keywords": [
+    "ssl",
+    "tls",
+    "security",
+    "scanner",
+    "monitoring",
+    "certificates"
+  ],
+  "author": "SecureScan AI Team",
+  "license": "MIT"
+}
