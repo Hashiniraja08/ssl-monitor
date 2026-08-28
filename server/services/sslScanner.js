@@ -5,29 +5,129 @@ const crypto = require('crypto');
 const { URL } = require('url');
 
 /**
- * Normalizes input into hostname and port
+ * Validates whether a hostname or IP is syntactically valid
+ */
+function isValidHostname(host) {
+  if (!host || typeof host !== 'string') return false;
+  const trimmed = host.trim().toLowerCase();
+  if (trimmed.length === 0 || trimmed.length > 253) return false;
+  if (trimmed.includes(' ') || trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('@')) return false;
+
+  // Check IPv4
+  if (net.isIPv4(trimmed)) return true;
+
+  // Check IPv6 (strip brackets if any)
+  const cleanIPv6 = trimmed.replace(/^\[|\]$/g, '');
+  if (net.isIPv6(cleanIPv6)) return true;
+
+  // Domain syntax check (RFC 1035 / RFC 1123)
+  // Each label 1-63 chars, alphanumeric with hyphens, not starting or ending with hyphen
+  const domainRegex = /^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+  const localhostRegex = /^localhost$/i;
+  const singleLabelRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$/;
+
+  return domainRegex.test(trimmed) || localhostRegex.test(trimmed) || singleLabelRegex.test(trimmed);
+}
+
+/**
+ * Normalizes user input into a validated hostname, port, and standard HTTPS URL
  */
 function parseTarget(input) {
-  let target = input.trim();
-  if (!target.startsWith('http://') && !target.startsWith('https://')) {
-    target = 'https://' + target;
+  if (!input || typeof input !== 'string') {
+    return {
+      valid: false,
+      hostname: '',
+      port: 443,
+      url: '',
+      error: 'Website URL or domain name is required.'
+    };
   }
+
+  let clean = input.trim();
+  if (!clean) {
+    return {
+      valid: false,
+      hostname: '',
+      port: 443,
+      url: '',
+      error: 'Website URL or domain name cannot be empty.'
+    };
+  }
+
+  let parsedProtocol = 'https:';
+  let port = 443;
+  let hostname = '';
+
   try {
-    const parsed = new URL(target);
-    return {
-      hostname: parsed.hostname,
-      port: parseInt(parsed.port, 10) || 443,
-      url: `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`
-    };
+    let toParse = clean;
+    if (!toParse.startsWith('http://') && !toParse.startsWith('https://')) {
+      toParse = 'https://' + toParse;
+    }
+
+    const parsed = new URL(toParse);
+    parsedProtocol = parsed.protocol;
+    hostname = parsed.hostname;
+    
+    if (parsed.port) {
+      port = parseInt(parsed.port, 10);
+    } else if (parsedProtocol === 'http:') {
+      // Default to 443 for SSL scan even if user typed http:// without custom port
+      port = 443;
+      parsedProtocol = 'https:';
+    } else {
+      port = 443;
+    }
   } catch (err) {
-    const clean = input.replace(/^[a-zA-Z]+:\/\//, '').split('/')[0];
-    const [host, portStr] = clean.split(':');
+    // Fallback extraction
+    const rawClean = clean.replace(/^[a-zA-Z]+:\/\//, '').split('/')[0].split('?')[0].split('#')[0];
+    const [hostPart, portPart] = rawClean.split(':');
+    hostname = hostPart;
+    port = portPart ? parseInt(portPart, 10) : 443;
+  }
+
+  // Strip trailing dot if present
+  if (hostname.endsWith('.')) {
+    hostname = hostname.slice(0, -1);
+  }
+
+  if (!isValidHostname(hostname)) {
     return {
-      hostname: host,
-      port: portStr ? parseInt(portStr, 10) : 443,
-      url: `https://${host}${portStr ? ':' + portStr : ''}`
+      valid: false,
+      hostname,
+      port,
+      url: `https://${hostname}${port !== 443 ? ':' + port : ''}`,
+      error: `"${input}" is not a valid website URL or domain name. Please enter a valid address (e.g. example.com or https://example.com).`
     };
   }
+
+  const normalizedUrl = `${parsedProtocol}//${hostname}${port !== 443 && port !== 80 ? ':' + port : ''}`;
+
+  return {
+    valid: true,
+    hostname,
+    port: isNaN(port) || port <= 0 || port > 65535 ? 443 : port,
+    url: normalizedUrl,
+    error: null
+  };
+}
+
+/**
+ * Computes SHA-1 and SHA-256 thumbprints for raw certificate buffer
+ */
+function computeThumbprints(cert) {
+  let sha1 = cert.fingerprint ? cert.fingerprint.replace(/:/g, '').toLowerCase() : '';
+  let sha256 = cert.fingerprint256 ? cert.fingerprint256.replace(/:/g, '').toLowerCase() : '';
+
+  if (cert.raw && Buffer.isBuffer(cert.raw)) {
+    if (!sha1) {
+      sha1 = crypto.createHash('sha1').update(cert.raw).digest('hex');
+    }
+    if (!sha256) {
+      sha256 = crypto.createHash('sha256').update(cert.raw).digest('hex');
+    }
+  }
+
+  return { sha1, sha256 };
 }
 
 /**
@@ -43,7 +143,7 @@ function parseCertificate(cert, rawPeerCert, cipherInfo, protocolVersion) {
   const msRemaining = validTo.getTime() - now.getTime();
   const daysRemaining = Math.ceil(msRemaining / (1000 * 60 * 60 * 24));
 
-  // Determine status
+  // Determine certificate validity status
   let status = 'valid';
   if (daysRemaining < 0) {
     status = 'expired';
@@ -51,7 +151,7 @@ function parseCertificate(cert, rawPeerCert, cipherInfo, protocolVersion) {
     status = 'warning';
   }
 
-  // Parse SANs
+  // Parse SANs (Subject Alternative Names)
   let sans = [];
   if (cert.subjectaltname) {
     sans = cert.subjectaltname.split(',').map(s => s.trim().replace(/^DNS:/i, ''));
@@ -82,7 +182,7 @@ function parseCertificate(cert, rawPeerCert, cipherInfo, protocolVersion) {
   if (status === 'expired') {
     grade = 'F';
   } else if (protocolVersion === 'TLSv1.3') {
-    grade = 'A+';
+    grade = daysRemaining > 30 ? 'A+' : 'A';
   } else if (protocolVersion === 'TLSv1.2') {
     grade = daysRemaining > 30 ? 'A' : 'B';
   } else if (protocolVersion === 'TLSv1' || protocolVersion === 'TLSv1.1') {
@@ -95,6 +195,8 @@ function parseCertificate(cert, rawPeerCert, cipherInfo, protocolVersion) {
     serialNumber = serialNumber.match(/.{1,2}/g)?.join(':').toUpperCase() || serialNumber;
   }
 
+  const { sha1, sha256 } = computeThumbprints(cert);
+
   return {
     common_name: cert.subject?.CN || cert.subject?.O || 'Unknown',
     sans: sans,
@@ -102,11 +204,11 @@ function parseCertificate(cert, rawPeerCert, cipherInfo, protocolVersion) {
     issuer_org: issuerOrg,
     serial_number: serialNumber,
     signature_algorithm: cert.sigalg || cert.signatureAlgorithm || 'sha256WithRSAEncryption',
-    valid_from: validFrom.toISOString(),
-    valid_to: validTo.toISOString(),
+    valid_from: isNaN(validFrom.getTime()) ? null : validFrom.toISOString(),
+    valid_to: isNaN(validTo.getTime()) ? null : validTo.toISOString(),
     days_remaining: daysRemaining,
-    thumbprint_sha1: cert.fingerprint ? cert.fingerprint.replace(/:/g, '').toLowerCase() : '',
-    thumbprint_sha256: cert.fingerprint256 ? cert.fingerprint256.replace(/:/g, '').toLowerCase() : '',
+    thumbprint_sha1: sha1,
+    thumbprint_sha256: sha256,
     key_type: keyType,
     key_size: keySize,
     tls_version: protocolVersion || 'TLSv1.3',
@@ -117,34 +219,40 @@ function parseCertificate(cert, rawPeerCert, cipherInfo, protocolVersion) {
 }
 
 /**
- * Builds certificate chain from peer cert and detailed chain nodes
+ * Builds authentic certificate chain strictly from the presented peer certificate graph.
+ * Zero hardcoded mock fallback CA entries are used.
  */
 function buildCertificateChain(leafCert, targetHost) {
   const chain = [];
+  const visited = new Set();
   let current = leafCert;
   let level = 0;
 
-  while (current) {
+  while (current && !visited.has(current)) {
+    visited.add(current);
     const isLeaf = level === 0;
-    const isRoot = !current.issuerCertificate || current.issuerCertificate === current || (current.issuer?.CN === current.subject?.CN);
+    const isSelfSigned = current.issuer?.CN && current.subject?.CN && current.issuer?.CN === current.subject?.CN;
+    const isRoot = !current.issuerCertificate || current.issuerCertificate === current || isSelfSigned;
 
     const validFrom = current.valid_from ? new Date(current.valid_from).toISOString() : '';
     const validTo = current.valid_to ? new Date(current.valid_to).toISOString() : '';
     const daysRemaining = current.valid_to ? Math.ceil((new Date(current.valid_to).getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : 0;
 
+    const { sha1, sha256 } = computeThumbprints(current);
+
     chain.push({
       type: isLeaf ? 'Leaf Certificate' : isRoot ? 'Root CA' : 'Intermediate CA',
       name: current.subject?.CN || current.subject?.O || (isLeaf ? targetHost : 'Certificate Authority'),
       organization: current.subject?.O || current.issuer?.O || 'Certificate Authority',
-      country: current.subject?.C || current.issuer?.C || 'US',
-      issuer: current.issuer?.CN || current.issuer?.O || 'Self-signed Root',
+      country: current.subject?.C || current.issuer?.C || '',
+      issuer: current.issuer?.CN || current.issuer?.O || (isRoot ? 'Self-signed Root' : 'Unknown CA'),
       serial_number: current.serialNumber || '',
       valid_from: validFrom,
       valid_to: validTo,
       days_remaining: daysRemaining,
-      signature_algorithm: current.sigalg || 'sha256WithRSAEncryption',
-      thumbprint_sha1: current.fingerprint ? current.fingerprint.replace(/:/g, '').toLowerCase() : '',
-      thumbprint_sha256: current.fingerprint256 ? current.fingerprint256.replace(/:/g, '').toLowerCase() : '',
+      signature_algorithm: current.sigalg || current.signatureAlgorithm || 'sha256WithRSAEncryption',
+      thumbprint_sha1: sha1,
+      thumbprint_sha256: sha256,
       status: daysRemaining < 0 ? 'expired' : 'valid'
     });
 
@@ -155,47 +263,6 @@ function buildCertificateChain(leafCert, targetHost) {
     level++;
   }
 
-  // If only 1 cert was returned in chain, synthesize realistic CA chain entries for visualization
-  if (chain.length === 1 && leafCert.issuer) {
-    const issuerCN = leafCert.issuer.CN || leafCert.issuer.O || 'DigiCert Global Root CA';
-    const issuerO = leafCert.issuer.O || 'Certificate Authority LLC';
-    const isSelfSigned = leafCert.subject?.CN === leafCert.issuer?.CN;
-
-    if (!isSelfSigned) {
-      chain.push({
-        type: 'Intermediate CA',
-        name: issuerCN,
-        organization: issuerO,
-        country: leafCert.issuer.C || 'US',
-        issuer: `${issuerO} Primary CA`,
-        serial_number: '0A:48:3C:9B:1E:5F:2A:7D',
-        valid_from: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000 * 2).toISOString(),
-        valid_to: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000 * 6).toISOString(),
-        days_remaining: 2190,
-        signature_algorithm: 'sha256WithRSAEncryption',
-        thumbprint_sha1: '3f7b2a9e1d8c4b6a5e0f7d2b9a8c1e3f5a7b9c1d',
-        thumbprint_sha256: '9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b',
-        status: 'valid'
-      });
-
-      chain.push({
-        type: 'Root CA',
-        name: `${issuerO} Trust Root G2`,
-        organization: issuerO,
-        country: leafCert.issuer.C || 'US',
-        issuer: `${issuerO} Trust Root G2`,
-        serial_number: '01:FD:6D:30:FC:A3:CA:51:A8:1B:BC:64:0E:35:03:2D',
-        valid_from: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000 * 5).toISOString(),
-        valid_to: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000 * 15).toISOString(),
-        days_remaining: 5475,
-        signature_algorithm: 'sha256WithRSAEncryption',
-        thumbprint_sha1: '8f3e2a1b9c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f',
-        thumbprint_sha256: '4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d',
-        status: 'valid'
-      });
-    }
-  }
-
   return chain;
 }
 
@@ -204,7 +271,23 @@ function buildCertificateChain(leafCert, targetHost) {
  */
 async function scanSSL(inputUrl, options = {}) {
   const timeoutMs = options.timeout || 8000;
-  const { hostname, port, url } = parseTarget(inputUrl);
+  const parsedTarget = parseTarget(inputUrl);
+
+  if (!parsedTarget.valid) {
+    return {
+      url: parsedTarget.url || inputUrl,
+      domain: parsedTarget.hostname || inputUrl,
+      port: parsedTarget.port || 443,
+      ip_addresses: [],
+      status: 'error',
+      grade: 'F',
+      error_code: 'ERR_INVALID_URL',
+      error_message: parsedTarget.error || 'The entered website address is invalid. Please check the spelling and try again.',
+      scanned_at: new Date().toISOString()
+    };
+  }
+
+  const { hostname, port, url } = parsedTarget;
 
   // 1. Resolve DNS for IPv4 and IPv6
   let ipAddresses = [];
@@ -219,7 +302,7 @@ async function scanSSL(inputUrl, options = {}) {
       }
     }
   } catch (dnsErr) {
-    console.warn(`DNS lookup warning for ${hostname}:`, dnsErr.message);
+    // DNS resolution failure will be captured during socket connection
   }
 
   return new Promise((resolve) => {
@@ -236,8 +319,8 @@ async function scanSSL(inputUrl, options = {}) {
           ip_addresses: ipAddresses,
           status: 'error',
           grade: 'F',
-          error_code: 'ETIMEDOUT',
-          error_message: `Connection to ${hostname}:${port} timed out after ${timeoutMs}ms.`,
+          error_code: 'ERR_CONNECTION_TIMED_OUT',
+          error_message: `Connection to ${hostname}:${port} timed out after ${timeoutMs}ms. The server may be offline or blocking TLS handshakes.`,
           scanned_at: new Date().toISOString()
         });
       }
@@ -249,7 +332,7 @@ async function scanSSL(inputUrl, options = {}) {
         host: hostname,
         port: port,
         servername: hostname, // SNI support
-        rejectUnauthorized: false, // Allow inspection of expired/untrusted certificates
+        rejectUnauthorized: false, // Inspect expired/self-signed/untrusted certificates
         requestCert: true,
         timeout: timeoutMs
       }, () => {
@@ -274,7 +357,7 @@ async function scanSSL(inputUrl, options = {}) {
               status: 'error',
               grade: 'F',
               error_code: 'ERR_NO_CERTIFICATE',
-              error_message: 'The remote server did not present an SSL/TLS certificate.',
+              error_message: `The remote host ${hostname}:${port} connected successfully but did not present an SSL/TLS certificate.`,
               scanned_at: new Date().toISOString()
             });
           }
@@ -316,7 +399,7 @@ async function scanSSL(inputUrl, options = {}) {
             status: 'error',
             grade: 'F',
             error_code: 'ERR_PARSING_FAILED',
-            error_message: `Failed to parse certificate: ${parseErr.message}`,
+            error_message: `Failed to parse TLS certificate from ${hostname}: ${parseErr.message}`,
             scanned_at: new Date().toISOString()
           });
         }
@@ -329,20 +412,26 @@ async function scanSSL(inputUrl, options = {}) {
         if (socket) socket.destroy();
 
         let errorCode = err.code || 'ERR_CONNECTION_FAILED';
-        let errorMessage = err.message || 'Failed to establish SSL/TLS handshake.';
+        let errorMessage = err.message || `Failed to establish TLS handshake with ${hostname}:${port}.`;
 
         if (err.code === 'ENOTFOUND') {
           errorCode = 'ERR_HOST_NOT_FOUND';
-          errorMessage = `Unable to resolve host ${hostname}. Check domain spelling.`;
+          errorMessage = `Unable to resolve host "${hostname}". Please verify that the domain name is spelled correctly and exists in DNS.`;
         } else if (err.code === 'ECONNREFUSED') {
           errorCode = 'ERR_CONNECTION_REFUSED';
-          errorMessage = `Connection refused by ${hostname}:${port}. Port may not be serving HTTPS.`;
+          errorMessage = `Connection refused by ${hostname}:${port}. The server may not be running an HTTPS service on port ${port}.`;
+        } else if (err.code === 'EHOSTUNREACH') {
+          errorCode = 'ERR_HOST_UNREACHABLE';
+          errorMessage = `Host ${hostname} is unreachable. Check network connectivity.`;
+        } else if (err.code === 'ECONNRESET') {
+          errorCode = 'ERR_CONNECTION_RESET';
+          errorMessage = `Connection was abruptly closed or reset by ${hostname}:${port} during TLS handshake.`;
         } else if (err.code === 'CERT_HAS_EXPIRED') {
           errorCode = 'ERR_CERT_DATE_INVALID';
-          errorMessage = 'The server certificate has expired.';
+          errorMessage = `The SSL/TLS certificate for ${hostname} has expired.`;
         } else if (err.code === 'DEPTH_ZERO_SELF_SIGNED_CERT') {
           errorCode = 'ERR_CERT_AUTHORITY_INVALID';
-          errorMessage = 'Self-signed certificate in certificate chain.';
+          errorMessage = `Self-signed certificate presented by ${hostname}.`;
         }
 
         resolve({
@@ -370,7 +459,7 @@ async function scanSSL(inputUrl, options = {}) {
         status: 'error',
         grade: 'F',
         error_code: 'ERR_SOCKET_INIT',
-        error_message: err.message,
+        error_message: err.message || 'Failed to initialize TLS socket connection.',
         scanned_at: new Date().toISOString()
       });
     }
@@ -381,5 +470,6 @@ module.exports = {
   scanSSL,
   parseTarget,
   parseCertificate,
-  buildCertificateChain
+  buildCertificateChain,
+  isValidHostname
 };

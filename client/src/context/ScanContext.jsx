@@ -24,8 +24,9 @@ export function ScanProvider({ children, onNavigate }) {
   }, []);
 
   const executeScan = async (url) => {
-    if (!url) return;
-    setScanningUrl(url);
+    if (!url || typeof url !== 'string' || !url.trim()) return;
+    const cleanUrl = url.trim();
+    setScanningUrl(cleanUrl);
     setIsScanning(true);
     setScanError(null);
 
@@ -34,11 +35,10 @@ export function ScanProvider({ children, onNavigate }) {
     }
 
     try {
-      const result = await api.scan(url);
+      const result = await api.scan(cleanUrl);
       setCurrentScan(result);
       loadRecentScans();
 
-      // Allow the scanning terminal animation to finish smoothly
       setTimeout(() => {
         setIsScanning(false);
         if (result.status === 'error') {
@@ -47,23 +47,23 @@ export function ScanProvider({ children, onNavigate }) {
         } else {
           if (onNavigate) onNavigate('results');
         }
-      }, 2000);
+      }, 1600);
 
       return result;
     } catch (err) {
       const errorObj = {
-        url,
-        domain: url.replace(/^[a-zA-Z]+:\/\//, '').split('/')[0],
+        url: cleanUrl,
+        domain: cleanUrl.replace(/^[a-zA-Z]+:\/\//, '').split('/')[0] || cleanUrl,
         status: 'error',
-        error_code: 'ERR_NETWORK_OR_SERVER',
-        error_message: err.message || 'Failed to communicate with scanner service.',
+        error_code: err.data?.error_code || (err.status === 400 ? 'ERR_INVALID_URL' : 'ERR_NETWORK_OR_SERVER'),
+        error_message: err.data?.error || err.message || 'Failed to communicate with the SSL/TLS scanner service.',
         scanned_at: new Date().toISOString()
       };
       setScanError(errorObj);
       setTimeout(() => {
         setIsScanning(false);
         if (onNavigate) onNavigate('error');
-      }, 1500);
+      }, 1200);
       return errorObj;
     }
   };

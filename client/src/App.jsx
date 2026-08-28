@@ -18,8 +18,7 @@ import { AlertSettings } from './pages/AlertSettings';
 import { AccountSettings } from './pages/AccountSettings';
 import { GetStarted } from './pages/GetStarted';
 
-function AppContent() {
-  const [currentTab, setCurrentTab] = useState('scan-home');
+function AppContent({ currentTab, setCurrentTab }) {
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
   const { executeScan } = useScan();
 
@@ -99,12 +98,12 @@ function AppContent() {
 }
 
 export function App() {
-  const [navTab, setNavTab] = useState('scan-home');
+  const [currentTab, setCurrentTab] = useState('scan-home');
 
   return (
     <AuthProvider>
-      <ScanProvider onNavigate={setNavTab}>
-        <AppContent />
+      <ScanProvider onNavigate={setCurrentTab}>
+        <AppContent currentTab={currentTab} setCurrentTab={setCurrentTab} />
       </ScanProvider>
     </AuthProvider>
   );

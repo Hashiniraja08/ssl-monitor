@@ -101,8 +101,43 @@ test('Certificate Chain Builder - should build hierarchy structure with Leaf, In
   assert.strictEqual(chain[2].type, 'Root CA');
 });
 
-test('Live Scan Error Handling - should return structured error object on invalid domain', async () => {
-  const result = await scanSSL('invalid-nonexistent-domain-xyz-12345.test', { timeout: 2000 });
+test('Target Parser - should validate domain syntax and reject invalid inputs', () => {
+  const v1 = parseTarget('google.com');
+  assert.strictEqual(v1.valid, true);
+  assert.strictEqual(v1.hostname, 'google.com');
+  assert.strictEqual(v1.port, 443);
+
+  const v2 = parseTarget('https://api.github.com:8443/v1/user');
+  assert.strictEqual(v2.valid, true);
+  assert.strictEqual(v2.hostname, 'api.github.com');
+  assert.strictEqual(v2.port, 8443);
+
+  const v3 = parseTarget('http://1.1.1.1');
+  assert.strictEqual(v3.valid, true);
+  assert.strictEqual(v3.hostname, '1.1.1.1');
+  assert.strictEqual(v3.port, 443);
+
+  const inv1 = parseTarget('invalid website with spaces');
+  assert.strictEqual(inv1.valid, false);
+  assert.ok(inv1.error);
+
+  const inv2 = parseTarget('');
+  assert.strictEqual(inv2.valid, false);
+
+  const inv3 = parseTarget('https://');
+  assert.strictEqual(inv3.valid, false);
+});
+
+test('Live Scan Error Handling - should return structured error object on malformed URL', async () => {
+  const result = await scanSSL('bad url with space');
+  assert.strictEqual(result.status, 'error');
+  assert.strictEqual(result.grade, 'F');
+  assert.strictEqual(result.error_code, 'ERR_INVALID_URL');
+  assert.ok(result.error_message.includes('not a valid website URL'));
+});
+
+test('Live Scan Error Handling - should return structured error object on non-existent domain', async () => {
+  const result = await scanSSL('invalid-nonexistent-domain-xyz-987654321.test', { timeout: 2000 });
   assert.strictEqual(result.status, 'error');
   assert.strictEqual(result.grade, 'F');
   assert.ok(result.error_code);

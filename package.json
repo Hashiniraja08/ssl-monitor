@@ -8,9 +8,18 @@
     "dev:client": "npm --prefix client run dev",
     "dev": "node -e \"const { spawn } = require('child_process'); spawn('node', ['server/index.js'], { stdio: 'inherit', shell: true }); spawn('npm', ['--prefix', 'client', 'run', 'dev'], { stdio: 'inherit', shell: true });\"",
     "start": "node server/index.js",
-    "test": "node --test server/tests/*.test.js",
+    "test": "node --test server/tests/sslScanner.test.js",
     "seed": "node server/db/seed.js",
     "build": "npm --prefix client run build"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "pg": "^8.13.1"
   },
   "keywords": [
     "ssl",

@@ -2,11 +2,15 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
-const DATA_DIR = path.join(__dirname, '../data');
+const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? '/tmp/data' : path.join(__dirname, '../data'));
 const JSON_DB_FILE = path.join(DATA_DIR, 'securescan.json');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+} catch (err) {
+  console.warn('Could not create data directory:', err.message);
 }
 
 let isPgConnected = false;
